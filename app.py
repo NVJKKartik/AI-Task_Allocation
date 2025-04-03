@@ -322,6 +322,7 @@ def show_communication():
                 st.success("Reminder sent successfully!")
         else:
                 st.error("Failed to send reminder")
+import json
 
 def show_learning():
     """Show learning and adaptation features"""
@@ -334,13 +335,21 @@ def show_learning():
         st.subheader("User Preferences")
         preferences = st.session_state.learning_system.user_preferences.get(user_id)
         if preferences:
-            st.json({
-                "Preferred Task Types": preferences.preferred_task_types,
-                "Skill Preferences": preferences.skill_preferences,
-                "Task Complexity Preference": preferences.task_complexity_preference,
-                "Collaboration Preference": preferences.collaboration_preference
-            })
-        
+            try:
+                st.markdown("### Preferred Task Types")
+                st.write(preferences.preferred_task_types)
+                
+                st.markdown("### Skill Preferences")
+                st.write(preferences.skill_preferences)
+                
+                st.markdown("### Task Complexity Preference")
+                st.write(preferences.task_complexity_preference)
+                
+                st.markdown("### Collaboration Preference")
+                st.write(preferences.collaboration_preference)
+            except TypeError:
+                st.error("Error displaying user preferences. Data may not be JSON serializable.")
+
         # Task recommendations
         st.subheader("Task Recommendations")
         if st.button("Get Recommendations"):
@@ -348,14 +357,38 @@ def show_learning():
                 user_id,
                 list(st.session_state.tasks.values())
             )
-            for task in recommendations:
-                st.json(task)
-        
+            if recommendations:
+                try:
+                    for task in recommendations:
+                        st.markdown(f"#### Task ID: {task.task_id}")
+                        st.write(f"**Title:** {task.title}")
+                        st.write(f"**Description:** {task.description}")
+                        st.write(f"**Required Skills:** {task.required_skills}")
+                        st.write(f"**Priority:** {task.priority}")
+                        st.write(f"**Deadline:** {task.deadline.strftime('%Y-%m-%d %H:%M')}")
+                        
+                        # Add YouTube and technology links
+                        st.markdown("### Learning Resources")
+                        for skill in task.required_skills:
+                            st.write(f"- [Learn {skill} on YouTube](https://www.youtube.com/results?search_query={skill})")
+                            st.write(f"- [Documentation for {skill}](https://www.google.com/search?q={skill}+documentation)")
+                        
+                        st.markdown("---")
+                except TypeError:
+                    st.error("Error displaying recommendations. Data may not be JSON serializable.")
         # User clustering
-        st.subheader("User Clustering")
-        if st.button("Cluster Users"):
-            clusters = st.session_state.learning_system.cluster_users_by_preferences()
-            st.json(clusters)
+        # st.subheader("User Clustering")
+        # print("point 1")
+        # if st.button("Cluster Users"):
+        #     print("point 2")
+        #     clusters = st.session_state.learning_system.cluster_users_by_preferences()
+        #     if clusters:
+        #         try:
+        #             print("point 3")
+        #             st.json({"Clusters": clusters})
+        #             print(clusters)
+        #         except TypeError:
+        #             st.error("Error displaying user clusters. Data may not be JSON serializable.")
 
 def show_progress_tracking():
     """Show progress tracking features"""
