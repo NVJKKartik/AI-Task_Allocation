@@ -1,0 +1,6 @@
+Team Name: XHD
+Problem Statement Title: AI Agent for Task Allocation
+College Name: Indian Institute of Information Technology (IIIT), Dharwad
+Full Names: Vivaan Sharma, Aarsh Desai, N.V.J.K Kartik, Vinayak
+Email Addresses: 21bds070@iiitdwd.ac.in, 21bds001@iiitdwd.ac.in, 21bds041@iiitdwd.ac.in, 21bds069@iiitdwd.ac.in
+Phone Numbers: +91 6378068339, +91 9727722530, +91 7247520544, +91 9110414767
