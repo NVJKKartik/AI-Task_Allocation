@@ -9,6 +9,7 @@ from langchain_openai import ChatOpenAI
 import sys
 import os
 import numpy as np
+import json # Import json
 
 from task_matching_algorithm import Task, UserProfile, TaskAllocation, TaskMatchingEngine
 from personalization import PersonalizedTaskMatcher, AllocationHistory
@@ -46,28 +47,58 @@ class AutomatedAllocator:
             )
         ]
     
-    def get_eligible_users(self, task: Task, users: List[UserProfile]) -> List[UserProfile]:
-        """Get users who are eligible for a task based on skills and workload"""
-        eligible_users = []
+    def get_eligible_users(self, task: Task, users: List[UserProfile], simulated_now: Optional[datetime] = None) -> List[UserProfile]:
+        """Find users who meet basic criteria (skills, availability, workload)."""
+        
+        if simulated_now is None:
+            simulated_now = datetime.now(pytz.UTC)
+        
+        eligible = []
         for user in users:
-            if user.current_workload >= 1.0:  # Skip fully loaded users
+            # 1. Skill Check
+            has_required_skills = True
+            if task.required_skills:
+                for skill, level in task.required_skills.items():
+                    if user.skills.get(skill, 0) < level:
+                        has_required_skills = False
+                        break
+            if not has_required_skills:
+                continue
+            
+            # 2. Workload Check (simple threshold)
+            if user.current_workload >= 1.0:
+                continue
+
+            # --- Modified Availability Check --- #
+            required_duration = task.estimated_duration
+            
+            # Check deadline first
+            if task.deadline.astimezone(pytz.UTC) <= simulated_now:
                 continue
                 
-            # Calculate skill match percentage
-            skill_matches = 0
-            total_skills = len(task.required_skills)
-            for skill, required_level in task.required_skills.items():
-                user_level = user.skills.get(skill, 0)
-                if user_level >= required_level * 0.6:  # 60% of required level
-                    skill_matches += 1
+            # Get the specific user's availability object
+            user_availability = self.availability_manager.get_user_availability(user.user_id)
             
-            skill_match_percentage = skill_matches / total_skills if total_skills > 0 else 1.0
+            # Calculate max days to search ahead
+            days_diff = (task.deadline.astimezone(pytz.UTC) - simulated_now).days
+            max_days = max(1, min(days_diff + 1, 30)) # Search at least today, up to 30 days
+
+            # Check if there is *any* slot available between now and the deadline
+            next_slot = user_availability.find_next_available_slot(
+                start_time=simulated_now, 
+                duration=required_duration,
+                max_days_ahead=max_days # Use max_days_ahead
+            )
             
-            # Include user if they match at least 50% of skills
-            if skill_match_percentage >= 0.5:
-                eligible_users.append(user)
-        
-        return eligible_users
+            if next_slot is None:
+                 # print(f"DEBUG: User {user.user_id} has NO slot for task {task.task_id} duration {required_duration} before deadline {task.deadline}") # Optional Debug
+                 continue # Skip user if no suitable slot found before deadline
+            # --- End Modified Availability Check --- #
+            
+            # print(f"DEBUG: User {user.user_id} IS eligible for task {task.task_id}") # Optional Debug
+            eligible.append(user)
+            
+        return eligible
     
     def generate_allocation_plan(self, tasks: Dict[str, Task], users: List[UserProfile], allocations: Dict[str, Dict]) -> List[Dict]:
         """Generate a plan for allocating tasks to users"""
@@ -198,19 +229,25 @@ class AutomatedAllocator:
                     alloc["task"], alloc["user"], allocation_data
                 )
     
-    def get_allocation_suggestions(self, task: Task, users: List[UserProfile]) -> Dict:
-        """Get allocation suggestions for a task"""
-        # Get eligible users
-        eligible_users = self.get_eligible_users(task, users)
+    def get_allocation_suggestions(self, task: Task, users: List[UserProfile], simulated_now: Optional[datetime] = None) -> Dict:
+        """Get allocation suggestions for a task, considering eligibility with simulated time."""
+        
+        if simulated_now is None:
+            simulated_now = datetime.now(pytz.UTC)
+            
+        # Get eligible users based on skills AND availability starting from simulated_now
+        eligible_users = self.get_eligible_users(task, users, simulated_now)
         if not eligible_users:
             return None
         
         # Use personalization engine (which now uses the LLM engine first)
+        # Pass eligible users to the personalization matcher
         allocation = self.personalization_engine.match_task_to_users(task, eligible_users)
         
-        # Find the full user profile for the best match ID
+        # Find the full user profile for the best match ID from the original users list
         matched_user_profile = None
         if allocation["best_match_user_id"]:
+            # Ensure we look in the original 'users' list passed to the function
             matched_user_profile = next((u for u in users if u.user_id == allocation["best_match_user_id"]), None)
 
         if matched_user_profile:
@@ -222,3 +259,108 @@ class AutomatedAllocator:
             }
         
         return None # Return None if no best match ID or profile found 
+
+    def _get_availability_summary(self, user_id: str, start_time: datetime, lookahead_days: int = 7) -> str:
+        """Generates a brief summary of user availability."""
+        try:
+            user_availability = self.availability_manager.get_user_availability(user_id)
+            end_time = start_time + timedelta(days=lookahead_days)
+            available_slots = user_availability.get_available_slots(start_time, end_time)
+            busy_slots = user_availability.get_busy_slots(start_time, end_time)
+            
+            if not available_slots and not busy_slots:
+                return "Availability not specified, assume generally available during standard hours."
+            
+            summary = "Available slots: " + ", ".join([f"{s.start_time.strftime('%a %H:%M')}-{s.end_time.strftime('%H:%M')}" for s in available_slots[:3]])
+            if len(available_slots) > 3:
+                summary += "..."
+            summary += " | Busy slots: " + ", ".join([f"{s.start_time.strftime('%a %H:%M')}-{s.end_time.strftime('%H:%M')}" for s in busy_slots[:2]])
+            if len(busy_slots) > 2:
+                 summary += "..."
+            return summary
+        except Exception:
+            return "Could not retrieve detailed availability."
+
+    def create_llm_allocation_plan(self, 
+                                 tasks: List[Task], 
+                                 users: List[UserProfile], 
+                                 simulated_now: datetime) -> List[Dict]:
+        """Generate a holistic allocation plan using LLM reasoning."""
+        
+        if not tasks or not users:
+            return []
+
+        # Prepare simplified user data for the prompt
+        users_prompt_data = []
+        for user in users:
+            availability_summary = self._get_availability_summary(user.user_id, simulated_now)
+            users_prompt_data.append({
+                "user_id": user.user_id,
+                "name": user.name,
+                "skills": user.skills,
+                "current_workload": user.current_workload,
+                "availability_summary": availability_summary
+                # Add preferences/performance summary if desired later
+            })
+
+        # Prepare task data
+        tasks_prompt_data = [t.to_dict() for t in tasks]
+
+        # Define the LLM prompt for planning
+        planning_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are an expert Task Allocation Planner. Your goal is to create an optimal plan assigning the given tasks to the available users.
+            
+            Guidelines:
+            1.  **Prioritize:** Assign higher priority tasks and those with earlier deadlines first.
+            2.  **Match Skills:** Match tasks to users with relevant skills and sufficient proficiency. Consider the task context (like in the TaskMatchingEngine prompt).
+            3.  **Check Availability & Workload:** Use the provided availability summary and current workload. A user might handle multiple tasks if they have the capacity and time before respective deadlines.
+            4.  **Balance Load:** Aim for a reasonably balanced workload across users, but prioritize getting tasks assigned effectively over perfect balance.
+            5.  **Assign if Possible:** Try to assign every task, but it's okay to leave a task unassigned if no suitable user is found.
+            6.  **Reasoning:** Provide a concise reason for each assignment based on the above factors.
+
+            Input:
+            - List of tasks with id, title, required_skills, priority, deadline, estimated_duration_minutes.
+            - List of users with id, name, skills, current_workload, availability_summary.
+            - Current Time: {current_time}
+
+            Output ONLY a JSON list of allocation objects, where each object represents ONE task assignment:
+            [ 
+                {{
+                    "task_id": "task-id-string", 
+                    "user_id": "user-id-string", 
+                    "reason": "Concise reason for this specific assignment (skills, availability, priority etc.)." 
+                }},
+                # ... more allocations ...
+            ]
+            If a task cannot be assigned, do not include it in the output list.
+            """),
+            ("human", "Tasks:\n{tasks_json}\n\nUsers:\n{users_json}\n\nCurrent Time: {current_time}")
+        ])
+
+        planning_chain = planning_prompt | self.llm | JsonOutputParser()
+
+        try:
+            print("--- Calling LLM for Allocation Plan --- ") # Debug
+            plan_result = planning_chain.invoke({
+                "tasks_json": json.dumps(tasks_prompt_data, default=str),
+                "users_json": json.dumps(users_prompt_data, default=str),
+                "current_time": simulated_now.isoformat()
+            })
+            
+            # Validate the result structure (should be a list of dicts)
+            if isinstance(plan_result, list):
+                 # Basic validation of list items
+                 validated_plan = [
+                     item for item in plan_result 
+                     if isinstance(item, dict) and 
+                        'task_id' in item and 'user_id' in item and 'reason' in item
+                 ]
+                 print(f"--- LLM Allocation Plan Generated ({len(validated_plan)} assignments) --- ") # Debug
+                 return validated_plan
+            else:
+                print(f"LLM plan result was not a list: {type(plan_result)}")
+                return []
+
+        except Exception as e:
+            print(f"Error creating LLM allocation plan: {e}")
+            return [] 

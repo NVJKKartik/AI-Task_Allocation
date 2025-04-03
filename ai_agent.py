@@ -239,7 +239,7 @@ class TaskAllocationAgent:
             return f"Error adding user: {str(e)}"
 
     def _execute_allocate_task(self, task_id: str, user_id: str, reason: str = "Allocation via chat agent.", session_state: Optional[dict] = None) -> str:
-        """Executes the logic to manually allocate a task."""
+        """Executes the logic to manually allocate a task, checking availability."""
         if not session_state:
             return "Error: Session state not provided."
         try:
@@ -248,13 +248,37 @@ class TaskAllocationAgent:
                 return f"Error: Task with ID {task_id} not found."
             if 'users' not in session_state or user_id not in session_state['users']:
                 return f"Error: User with ID {user_id} not found."
+            if 'availability_manager' not in session_state:
+                return "Error: Availability Manager not found in session state."
 
             task = session_state['tasks'][task_id]
             user = session_state['users'][user_id]
+            availability_manager = session_state['availability_manager']
+            simulated_now = session_state.get('simulated_now', datetime.now(pytz.UTC))
 
             # Check if task is already assigned
             if task.status != TaskStatus.PENDING.value:
                 return f"Error: Task {task_id} is not pending (current status: {task.status}). Cannot reallocate directly via chat yet."
+            
+            # --- Modified AVAILABILITY CHECK --- #
+            user_availability = availability_manager.get_user_availability(user_id)
+            
+            # Check deadline first
+            if task.deadline.astimezone(pytz.UTC) <= simulated_now:
+                return f"Error: Task {task_id} deadline has passed relative to current simulated time ({simulated_now.strftime('%H:%M %Z')}). Cannot allocate."
+            
+            # Calculate max days to search ahead
+            days_diff = (task.deadline.astimezone(pytz.UTC) - simulated_now).days
+            max_days = max(1, min(days_diff + 1, 30))
+                
+            next_slot = user_availability.find_next_available_slot(
+                start_time=simulated_now, 
+                duration=task.estimated_duration,
+                max_days_ahead=max_days # Use max_days_ahead
+            )
+            if next_slot is None:
+                return f"Error: User {user.name} (ID: {user_id}) does not have a suitable time slot available starting from {simulated_now.strftime('%H:%M %Z')} until the deadline for the task duration ({task.estimated_duration}). Allocation failed."
+            # --- END Modified AVAILABILITY CHECK --- #
 
             # Create allocation record
             allocation_id = str(uuid.uuid4())
@@ -263,7 +287,7 @@ class TaskAllocationAgent:
             session_state['allocations'][allocation_id] = {
                 "task_id": task.task_id,
                 "user_id": user.user_id,
-                "allocated_at": datetime.now(pytz.UTC),
+                "allocated_at": simulated_now, # Use simulated time for allocation record
                 "status": AllocationStatus.ACCEPTED.value,
                 "confidence_score": 1.0, # Manual allocation
                 "allocation_reason": reason
@@ -282,7 +306,7 @@ class TaskAllocationAgent:
 
             return f"Successfully allocated task '{task.title}' (ID: {task_id}) to user '{user.name}' (ID: {user_id})."
         except Exception as e:
-            print(f"Error executing allocate_task: {e}")
+            print(f"Error executing allocate_task for {task_id} to {user_id}: {e}")
             return f"Error allocating task: {str(e)}"
 
     def _execute_get_task_details(self, task_id: str, session_state: Optional[dict] = None) -> str:
