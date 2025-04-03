@@ -1143,9 +1143,9 @@ def main():
             "🤖 AI Allocation",
             "✍️ Manual Allocation",
             "📅 Smart Availability",
-            "💬 Communication",
+            # "💬 Communication",
             "📚 Learning",
-            "📊 Progress Tracking"
+            # "📊 Progress Tracking"
         ]
     )
 
