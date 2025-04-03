@@ -39,7 +39,7 @@ from availability_management import (
     UserAvailability, 
     AvailabilityManager
 )
-from task_automation import TaskAnalyzer, TaskAutomationManager
+from task_automation import TaskAnalyzer
 from smart_availability import SmartAvailabilityManager
 from communication_manager import CommunicationManager
 from learning_system import LearningSystem
@@ -76,8 +76,6 @@ if 'personalization_engine' not in st.session_state:
     )
 if 'task_analyzer' not in st.session_state:
     st.session_state.task_analyzer = TaskAnalyzer()
-if 'task_automation_manager' not in st.session_state:
-    st.session_state.task_automation_manager = TaskAutomationManager()
 if 'smart_availability_manager' not in st.session_state:
     st.session_state.smart_availability_manager = SmartAvailabilityManager()
 if 'communication_manager' not in st.session_state:
@@ -240,39 +238,6 @@ def create_calendar_heatmap(user_id: str, year: int, month: int):
     fig.update_layout(height=200)
     
     return fig
-
-# Add new sections for the additional features
-def show_task_automation():
-    """Show task automation features"""
-    st.header("Task Automation")
-    
-    # Task analysis
-    st.subheader("Task Analysis")
-    task_description = st.text_area("Enter task description for analysis:")
-    if st.button("Analyze Task"):
-        if task_description:
-            analysis = st.session_state.task_analyzer.analyze_task(task_description)
-            st.json({
-                "Required Skills": analysis.required_skills,
-                "Estimated Complexity": analysis.estimated_complexity,
-                "Estimated Duration": str(analysis.estimated_duration),
-                "Task Category": analysis.task_category,
-                "Dependencies": analysis.dependencies,
-                "Keywords": analysis.keywords
-            })
-    
-    # Email to task conversion
-    st.subheader("Email to Task Conversion")
-    email_content = st.text_area("Paste email content to create task:")
-    if st.button("Create Task from Email"):
-        if email_content:
-            task = st.session_state.task_automation_manager.create_task_from_email(email_content)
-            if task:
-                st.json(task)
-                if st.button("Add Task"):
-                    task_id = f"task-{len(st.session_state.tasks) + 1}"
-                    st.session_state.tasks[task_id] = task
-                    st.success("Task added successfully!")
 
 def show_smart_availability():
     """Show smart availability features"""
@@ -996,7 +961,6 @@ def main():
             "📋 Allocation Board",
             "🤖 AI Allocation",
             "✍️ Manual Allocation",
-            "⚙️ Task Automation",
             "📅 Smart Availability",
             "💬 Communication",
             "📚 Learning",
@@ -1019,8 +983,6 @@ def main():
         show_ai_allocation()
     elif page_name == "Manual Allocation":
         show_manual_allocation()
-    elif page_name == "Task Automation":
-        show_task_automation()
     elif page_name == "Smart Availability":
         show_smart_availability()
     elif page_name == "Communication":

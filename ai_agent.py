@@ -536,42 +536,33 @@ class TaskAllocationAgent:
                 
                 # --- Tool Results Processing --- #
                 # Check if we got a simple success/error message back
-                # If so, return it directly without calling the summarization LLM
                 if tool_results_messages:
                     first_tool_content = tool_results_messages[0].content
                     if first_tool_content.startswith("Successfully") or first_tool_content.startswith("Error:"):
                         print("--- Returning direct tool result --- ") # Debug print
                         return first_tool_content
                     
-                # --- Second LLM Call: Generate Summary --- #
-                # Construct history specifically for summarization using only content
-                summary_history_messages = []
-                for msg in history_messages + tool_results_messages: # Combine history AND results
-                    if isinstance(msg, HumanMessage):
-                        summary_history_messages.append(HumanMessage(content=str(msg.content)))
-                    elif isinstance(msg, AIMessage):
-                        # Keep content, but avoid sending tool_calls to summarization LLM
-                        summary_history_messages.append(AIMessage(content=str(msg.content)))
-                    elif isinstance(msg, ToolMessage):
-                        summary_history_messages.append(ToolMessage(content=str(msg.content), tool_call_id=msg.tool_call_id))
+                # --- Second LLM Call: Generate Summary (If result wasn't simple) --- #
+                print("--- Calling LLM for final summary --- ") 
                 
-                print("--- Calling LLM for final summary with CLEANED history: ---") # Debug print
+                # Construct the specific messages for the summarization call:
+                # The AI's previous turn (containing the tool_calls) + The results of those calls
+                summary_input_messages = [ai_response] + tool_results_messages
                 
-                summary_prompt = ChatPromptTemplate.from_messages([
-                    MessagesPlaceholder(variable_name="history_for_summary"),
-                    ("system", "You are an assistant reporting the outcome of an action. Based *only* on the preceding messages (especially Tool Messages), state clearly and concisely what action was taken and its result. Do not add extra commentary or mention your capabilities.")
-                ])
+                # We don't need a complex prompt, just invoke the base LLM 
+                # with the AI request and the tool results. It should naturally summarize.
+                final_response_message = self.llm.invoke(summary_input_messages)
                 
-                summary_chain = summary_prompt | self.llm 
-                final_response = summary_chain.invoke({"history_for_summary": summary_history_messages})
-                
-                return final_response.content
+                return final_response_message.content
 
         except Exception as e:
             print(f"Error in process_chat_message: {e}")
             # Provide a more user-friendly error message if possible
             if "JSON serializable" in str(e):
                  return "Sorry, I encountered an internal error processing the previous action's result (Serialization)."
+            # Add specific handling for the OpenAI API error if possible
+            if "role 'tool' must be a response" in str(e):
+                 return "Sorry, there was an issue structuring the conversation history for the API. Please try again or rephrase."
             return f"Sorry, an error occurred: {str(e)}"
 
 # Example usage (conceptual)
