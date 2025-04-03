@@ -21,6 +21,20 @@ from task_automation import TaskAnalyzer
 from personalization import AllocationHistory # Import for allocation record
 from availability_management import AvailabilityManager # Needed for workload?
 
+# --- Enums (Define BEFORE use) --- #
+class TaskStatus(Enum):
+    PENDING = "PENDING"
+    ASSIGNED = "ASSIGNED"
+    IN_PROGRESS = "IN_PROGRESS"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+
+class AllocationStatus(Enum): 
+    PENDING = "PENDING"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    COMPLETED = "COMPLETED"
+
 # --- Tool Schemas (using Pydantic for clarity) ---
 
 class AddTaskSchema(BaseModel):
@@ -33,7 +47,7 @@ class AddTaskSchema(BaseModel):
 class UpdateStatusSchema(BaseModel):
     """Tool to update the status of an existing task."""
     task_id: str = Field(..., description="The unique ID of the task to update (e.g., 'task-uuid-xyz').")
-    new_status: str = Field(..., description="The new status. Must be one of: PENDING, ASSIGNED, IN_PROGRESS, COMPLETED, CANCELLED.")
+    new_status: str = Field(..., description=f"The new status. Must be one of: {', '.join([s.value for s in TaskStatus])}.") # Now TaskStatus is defined
 
 class AddUserSchema(BaseModel):
     """Tool to add a new user to the system."""
@@ -68,19 +82,14 @@ class DeleteUserSchema(BaseModel):
     """Tool to delete an existing user from the system."""
     user_id: str = Field(..., description="The unique ID of the user to delete.")
 
-# --- Enums (Should match app.py) ---
-class TaskStatus(Enum):
-    PENDING = "PENDING"
-    ASSIGNED = "ASSIGNED"
-    IN_PROGRESS = "IN_PROGRESS"
-    COMPLETED = "COMPLETED"
-    CANCELLED = "CANCELLED"
+class QueryTasksSchema(BaseModel):
+    """Tool to query tasks based on criteria like status. Use this for system-wide queries (not specific to one user)."""
+    status: Optional[str] = Field(default=None, description=f"Filter tasks by status. Valid options: {', '.join([s.value for s in TaskStatus])}. If omitted, shows tasks with any status (useful for general queries, but might be long). Often defaults to PENDING if not specified by user for queries like 'what tasks need doing?'.")
+    # Add other filters later, like priority or deadline range
 
-class AllocationStatus(Enum): # Add AllocationStatus Enum if not present
-    PENDING = "PENDING"
-    ACCEPTED = "ACCEPTED"
-    REJECTED = "REJECTED"
-    COMPLETED = "COMPLETED"
+class CountUsersSchema(BaseModel):
+    """Tool to count the total number of users currently in the system."""
+    pass # No arguments needed
 
 # --- Agent Class ---
 
@@ -104,7 +113,9 @@ class TaskAllocationAgent:
             GetUserTasksSchema,
             DeleteTaskSchema,
             GetUserDetailsSchema,
-            DeleteUserSchema
+            DeleteUserSchema,
+            QueryTasksSchema,
+            CountUsersSchema
         ]]
         self.llm_with_tools = self.llm.bind_tools(self.tools)
         # Store mapping from tool name to execution method
@@ -118,6 +129,8 @@ class TaskAllocationAgent:
             "DeleteTaskSchema": self._execute_delete_task,
             "GetUserDetailsSchema": self._execute_get_user_details,
             "DeleteUserSchema": self._execute_delete_user,
+            "QueryTasksSchema": self._execute_query_tasks,
+            "CountUsersSchema": self._execute_count_users,
         }
         self._setup_skill_parser_chain() # Add chain for parsing skills
 
@@ -401,6 +414,61 @@ class TaskAllocationAgent:
             print(f"Error executing delete_user for {user_id}: {e}")
             return f"Error deleting user {user_id}: {str(e)}"
 
+    def _execute_query_tasks(self, status: Optional[str] = None, session_state: Optional[dict] = None) -> str:
+        """Executes the logic to find and list tasks based on status."""
+        if not session_state:
+            return "Error: Session state not provided."
+        if 'tasks' not in session_state or not session_state['tasks']:
+            return "There are currently no tasks in the system."
+        
+        tasks_to_list = []
+        target_status = status.upper() if status else None # Normalize status
+        
+        # Validate status if provided
+        if target_status and target_status not in [s.value for s in TaskStatus]:
+            valid_statuses = [s.value for s in TaskStatus]
+            return f"Invalid status '{status}' provided for query. Valid options are: {', '.join(valid_statuses)}."
+            
+        try:
+            for task_id, task in session_state['tasks'].items():
+                if target_status is None or task.status == target_status:
+                    # Include assigned user info if applicable
+                    assigned_user_name = "Unassigned"
+                    if task.status in [TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value]:
+                        if 'allocations' in session_state and 'users' in session_state:
+                           for alloc in session_state['allocations'].values():
+                                if alloc["task_id"] == task_id and alloc["status"] == AllocationStatus.ACCEPTED.value:
+                                    user_id = alloc["user_id"]
+                                    assigned_user_name = session_state['users'].get(user_id, {}).get("name", f"ID: {user_id}")
+                                    break
+                    tasks_to_list.append(f"- {task.title} (ID: {task_id}, Status: {task.status}, Assigned: {assigned_user_name})")
+            
+            if not tasks_to_list:
+                if target_status:
+                    return f"No tasks found with status '{target_status}'."
+                else:
+                    return "No tasks match the query."
+            else:
+                limit = 20 # Limit output length
+                response = f"Found {len(tasks_to_list)} tasks" 
+                if target_status:
+                     response += f" with status '{target_status}'"
+                response += ":\n" + "\n".join(tasks_to_list[:limit])
+                if len(tasks_to_list) > limit:
+                    response += f"\n... (and {len(tasks_to_list) - limit} more)"
+                return response
+        except Exception as e:
+            print(f"Error executing query_tasks (status={status}): {e}")
+            return f"Error querying tasks: {str(e)}"
+
+    def _execute_count_users(self, session_state: Optional[dict] = None) -> str:
+        """Executes the logic to count users."""
+        if not session_state:
+            return "Error: Session state not provided."
+        
+        num_users = len(session_state.get('users', {}))
+        return f"There are currently {num_users} users in the system."
+
     def process_chat_message(self, user_message: str, chat_history: list, session_state: dict) -> str:
         """Processes message using LLM with Tool Use.
         
@@ -556,4 +624,10 @@ if __name__ == "__main__":
     # Test User Query & Delete
     run_turn(f"Tell me about user {user_id_to_query}", chat_hist, mock_session)
     run_turn(f"Remove user {user_id_to_delete}", chat_hist, mock_session)
-    print(f"\nUsers after delete attempt: {mock_session['users']}") 
+    print(f"\nUsers after delete attempt: {mock_session['users']}")
+
+    # Test System Queries & Count
+    run_turn("How many users are there?", chat_hist, mock_session)
+    run_turn("what tasks are pending?", chat_hist, mock_session)
+    run_turn("list all completed tasks", chat_hist, mock_session)
+    run_turn("show all tasks", chat_hist, mock_session) # Test with no status filter 

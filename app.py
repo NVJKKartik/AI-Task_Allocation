@@ -512,7 +512,7 @@ def show_user_management():
         for user_id, user in st.session_state.users.items():
             with st.expander(f"{user.name} ({user_id})"):
                 col1, col2 = st.columns(2)
-
+                
                 with col1:
                     st.text("Skills")
                     for skill, level in user.skills.items():
