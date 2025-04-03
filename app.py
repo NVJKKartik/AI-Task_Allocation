@@ -322,7 +322,6 @@ def show_communication():
                 st.success("Reminder sent successfully!")
         else:
                 st.error("Failed to send reminder")
-import json
 
 def show_learning():
     """Show learning and adaptation features"""
@@ -335,21 +334,13 @@ def show_learning():
         st.subheader("User Preferences")
         preferences = st.session_state.learning_system.user_preferences.get(user_id)
         if preferences:
-            try:
-                st.markdown("### Preferred Task Types")
-                st.write(preferences.preferred_task_types)
-                
-                st.markdown("### Skill Preferences")
-                st.write(preferences.skill_preferences)
-                
-                st.markdown("### Task Complexity Preference")
-                st.write(preferences.task_complexity_preference)
-                
-                st.markdown("### Collaboration Preference")
-                st.write(preferences.collaboration_preference)
-            except TypeError:
-                st.error("Error displaying user preferences. Data may not be JSON serializable.")
-
+            st.json({
+                "Preferred Task Types": preferences.preferred_task_types,
+                "Skill Preferences": preferences.skill_preferences,
+                "Task Complexity Preference": preferences.task_complexity_preference,
+                "Collaboration Preference": preferences.collaboration_preference
+            })
+        
         # Task recommendations
         st.subheader("Task Recommendations")
         if st.button("Get Recommendations"):
@@ -357,6 +348,9 @@ def show_learning():
                 user_id,
                 list(st.session_state.tasks.values())
             )
+            for task in recommendations:
+                st.json(task)
+        
             if recommendations:
                 try:
                     for task in recommendations:
@@ -378,18 +372,10 @@ def show_learning():
                 except TypeError:
                     st.error("Error displaying recommendations. Data may not be JSON serializable.")
         # User clustering
-        # st.subheader("User Clustering")
-        # print("point 1")
-        # if st.button("Cluster Users"):
-        #     print("point 2")
-        #     clusters = st.session_state.learning_system.cluster_users_by_preferences()
-        #     if clusters:
-        #         try:
-        #             print("point 3")
-        #             st.json({"Clusters": clusters})
-        #             print(clusters)
-        #         except TypeError:
-        #             st.error("Error displaying user clusters. Data may not be JSON serializable.")
+        st.subheader("User Clustering")
+        if st.button("Cluster Users"):
+            clusters = st.session_state.learning_system.cluster_users_by_preferences()
+            st.json(clusters)
 
 def show_progress_tracking():
     """Show progress tracking features"""
@@ -936,7 +922,7 @@ def show_manual_allocation():
                 st.rerun()
 
 def show_allocation_board():
-    """Display the task allocation board"""
+    """Display the task allocation board with controls to update task status."""
     st.title("Allocation Board")
 
     if 'tasks' not in st.session_state or not st.session_state.tasks:
@@ -947,6 +933,13 @@ def show_allocation_board():
     tasks = st.session_state.tasks
     allocations = st.session_state.allocations
     users = st.session_state.users
+    
+    # Helper function to find the active allocation for a task
+    def find_active_allocation(task_id):
+        for alloc_id, alloc in allocations.items():
+            if alloc["task_id"] == task_id and alloc["status"] == AllocationStatus.ACCEPTED.value:
+                return alloc_id, alloc
+        return None, None
 
     # Create columns for task statuses
     cols = st.columns(len(TaskStatus))
@@ -955,32 +948,92 @@ def show_allocation_board():
     # Group tasks by status
     tasks_by_status = {status.value: [] for status in TaskStatus}
     for task_id, task in tasks.items():
-        tasks_by_status[task.status].append(task)
+        # Ensure task status is a string value from the enum
+        status_value = task.status if isinstance(task.status, str) else task.status.value
+        if status_value not in tasks_by_status:
+             # Handle potential legacy statuses or inconsistencies
+             st.warning(f"Task {task.task_id} has unknown status '{status_value}'. Placing in PENDING.")
+             status_value = TaskStatus.PENDING.value
+        tasks_by_status[status_value].append(task)
+
 
     # Display tasks in columns
     for status, col_index in status_map.items():
         with cols[col_index]:
             st.subheader(status.value.replace("_", " "))
             st.write("---")
-            for task in tasks_by_status[status.value]:
+            # Sort tasks within columns, maybe by priority or deadline? Optional.
+            # sorted_tasks = sorted(tasks_by_status[status.value], key=lambda t: t.priority, reverse=True)
+            sorted_tasks = tasks_by_status[status.value] 
+            
+            for task in sorted_tasks:
                 with st.container(border=True):
                     st.write(f"**{task.title}**")
                     st.caption(f"ID: {task.task_id}")
-                    st.write(f"Priority: {task.priority}")
-                    st.write(f"Deadline: {task.deadline.strftime('%Y-%m-%d')}")
+                    st.write(f"Prio: {task.priority} | Due: {task.deadline.strftime('%Y-%m-%d')}")
                     
-                    # Find allocation if assigned
+                    # Find allocation details if assigned or in progress
                     assigned_user_name = "Unassigned"
+                    user_id = None
+                    alloc_id = None
                     if task.status == TaskStatus.ASSIGNED.value or task.status == TaskStatus.IN_PROGRESS.value:
-                        for alloc_id, alloc in allocations.items():
-                            if alloc["task_id"] == task.task_id and alloc["status"] == AllocationStatus.ACCEPTED.value:
-                                user_id = alloc["user_id"]
-                                if user_id in users:
-                                    assigned_user_name = users[user_id].name
-                                else:
-                                    assigned_user_name = f"User ID: {user_id}"
-                                break
-                    st.write(f"Assigned to: {assigned_user_name}")
+                        alloc_id, allocation = find_active_allocation(task.task_id)
+                        if allocation and allocation["user_id"] in users:
+                            user_id = allocation["user_id"]
+                            assigned_user_name = users[user_id].name
+                        elif allocation:
+                             assigned_user_name = f"User ID: {allocation['user_id']}"
+                             user_id = allocation['user_id'] # Still store ID even if user deleted
+
+                    st.write(f"👤 {assigned_user_name}")
+
+                    # --- Add Action Buttons based on status ---
+                    if task.status == TaskStatus.ASSIGNED.value:
+                        button_cols = st.columns(2)
+                        with button_cols[0]:
+                            if st.button("▶️ Start Progress", key=f"start_{task.task_id}", use_container_width=True):
+                                task.status = TaskStatus.IN_PROGRESS.value
+                                st.session_state.tasks[task.task_id] = task
+                                st.success(f"Task '{task.title}' moved to In Progress.")
+                                st.rerun()
+                        with button_cols[1]:
+                             if st.button("❌ Cancel", key=f"cancel_assigned_{task.task_id}", use_container_width=True):
+                                task.status = TaskStatus.CANCELLED.value
+                                st.session_state.tasks[task.task_id] = task
+                                if alloc_id and user_id in st.session_state.users:
+                                    st.session_state.allocations[alloc_id]["status"] = AllocationStatus.REJECTED.value # Or maybe CANCELLED if added
+                                    user = st.session_state.users[user_id]
+                                    user.current_workload = max(0.0, user.current_workload - 0.2) # Decrease workload
+                                    st.session_state.users[user_id] = user
+                                st.warning(f"Task '{task.title}' cancelled.")
+                                st.rerun()
+
+                    elif task.status == TaskStatus.IN_PROGRESS.value:
+                        button_cols = st.columns(2)
+                        with button_cols[0]:
+                            if st.button("✅ Mark Complete", key=f"complete_{task.task_id}", use_container_width=True):
+                                task.status = TaskStatus.COMPLETED.value
+                                st.session_state.tasks[task.task_id] = task
+                                if alloc_id and user_id in st.session_state.users:
+                                    st.session_state.allocations[alloc_id]["status"] = AllocationStatus.COMPLETED.value 
+                                    st.session_state.allocations[alloc_id]["completed_at"] = st.session_state.simulated_now # Record completion time
+                                    user = st.session_state.users[user_id]
+                                    user.current_workload = max(0.0, user.current_workload - 0.2) # Decrease workload
+                                    st.session_state.users[user_id] = user
+                                st.success(f"Task '{task.title}' marked as Completed.")
+                                st.rerun()
+                        with button_cols[1]:
+                             if st.button("❌ Cancel", key=f"cancel_inprogress_{task.task_id}", use_container_width=True):
+                                task.status = TaskStatus.CANCELLED.value
+                                st.session_state.tasks[task.task_id] = task
+                                if alloc_id and user_id in st.session_state.users:
+                                    st.session_state.allocations[alloc_id]["status"] = AllocationStatus.REJECTED.value # Or CANCELLED
+                                    user = st.session_state.users[user_id]
+                                    user.current_workload = max(0.0, user.current_workload - 0.2) # Decrease workload
+                                    st.session_state.users[user_id] = user
+                                st.warning(f"Task '{task.title}' cancelled.")
+                                st.rerun()
+                    # --- End Action Buttons ---
 
 def show_agent_chat():
     """Display the AI agent chat interface"""

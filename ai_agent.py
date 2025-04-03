@@ -335,7 +335,11 @@ class TaskAllocationAgent:
                      for alloc in session_state['allocations'].values():
                          if alloc["task_id"] == task_id and alloc["status"] == AllocationStatus.ACCEPTED.value:
                              user_id = alloc["user_id"]
-                             assigned_user_name = session_state['users'].get(user_id, {}).get("name", f"ID: {user_id}")
+                             user_obj = session_state['users'].get(user_id)
+                             if user_obj:
+                                 assigned_user_name = user_obj.name
+                             else:
+                                 assigned_user_name = f"ID: {user_id} (User not found)"
                              break
             details += f"- Assigned To: {assigned_user_name}"
             
@@ -438,52 +442,61 @@ class TaskAllocationAgent:
             print(f"Error executing delete_user for {user_id}: {e}")
             return f"Error deleting user {user_id}: {str(e)}"
 
-    def _execute_query_tasks(self, status: Optional[str] = None, session_state: Optional[dict] = None) -> str:
-        """Executes the logic to find and list tasks based on status."""
+    def _execute_query_tasks(self, 
+                             status: Optional[str] = None, 
+                             session_state: Optional[dict] = None 
+                             ) -> str:
+        """Executes the logic to find and list tasks based on status, returning JSON string."""
         if not session_state:
-            return "Error: Session state not provided."
-        if 'tasks' not in session_state or not session_state['tasks']:
-            return "There are currently no tasks in the system."
+            return json.dumps({"error": "Session state not provided."})
+        tasks = session_state.get('tasks', {})
+        allocations = session_state.get('allocations', {})
+        users = session_state.get('users', {})
+
+        if not tasks:
+            return json.dumps({"message": "There are currently no tasks in the system."})
         
-        tasks_to_list = []
-        target_status = status.upper() if status else None # Normalize status
+        tasks_data = []
+        target_status = status.upper() if status else None
         
-        # Validate status if provided
         if target_status and target_status not in [s.value for s in TaskStatus]:
             valid_statuses = [s.value for s in TaskStatus]
-            return f"Invalid status '{status}' provided for query. Valid options are: {', '.join(valid_statuses)}."
+            return json.dumps({"error": f"Invalid status '{status}' provided for query. Valid options are: {', '.join(valid_statuses)}."})
             
         try:
-            for task_id, task in session_state['tasks'].items():
-                if target_status is None or task.status == target_status:
-                    # Include assigned user info if applicable
+            for task_id, task in tasks.items(): 
+                current_task_status = task.status if isinstance(task.status, str) else task.status.value
+                
+                if target_status is None or current_task_status == target_status:
                     assigned_user_name = "Unassigned"
-                    if task.status in [TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value]:
-                        if 'allocations' in session_state and 'users' in session_state:
-                           for alloc in session_state['allocations'].values():
-                                if alloc["task_id"] == task_id and alloc["status"] == AllocationStatus.ACCEPTED.value:
-                                    user_id = alloc["user_id"]
-                                    assigned_user_name = session_state['users'].get(user_id, {}).get("name", f"ID: {user_id}")
-                                    break
-                    tasks_to_list.append(f"- {task.title} (ID: {task_id}, Status: {task.status}, Assigned: {assigned_user_name})")
+                    if current_task_status in [TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value]:
+                       for alloc in allocations.values(): 
+                            if alloc["task_id"] == task_id and alloc["status"] == AllocationStatus.ACCEPTED.value:
+                                user_id = alloc["user_id"]
+                                user_obj = users.get(user_id) 
+                                if user_obj:
+                                     assigned_user_name = user_obj.name
+                                else:
+                                     assigned_user_name = f"ID: {user_id} (User not found)"
+                                break
+                    tasks_data.append({
+                        "id": task_id,
+                        "title": task.title,
+                        "status": current_task_status,
+                        "assigned_to": assigned_user_name
+                    })
             
-            if not tasks_to_list:
+            if not tasks_data:
                 if target_status:
-                    return f"No tasks found with status '{target_status}'."
+                    return json.dumps({"message": f"No tasks found with status '{target_status}'."})
                 else:
-                    return "No tasks match the query."
+                    return json.dumps({"message": "No tasks match the query."})
             else:
-                limit = 20 # Limit output length
-                response = f"Found {len(tasks_to_list)} tasks" 
-                if target_status:
-                     response += f" with status '{target_status}'"
-                response += ":\n" + "\n".join(tasks_to_list[:limit])
-                if len(tasks_to_list) > limit:
-                    response += f"\n... (and {len(tasks_to_list) - limit} more)"
-                return response
+                return json.dumps(tasks_data)
+
         except Exception as e:
             print(f"Error executing query_tasks (status={status}): {e}")
-            return f"Error querying tasks: {str(e)}"
+            return json.dumps({"error": f"Error querying tasks: {str(e)}"})
 
     def _execute_count_users(self, session_state: Optional[dict] = None) -> str:
         """Executes the logic to count users."""
@@ -539,9 +552,18 @@ class TaskAllocationAgent:
                     tool_result_content = "Error: Tool execution failed."
                     if tool_name in self.tool_map:
                         try:
-                            args = tool_call["args"]
-                            args["session_state"] = session_state 
-                            tool_result_content = self.tool_map[tool_name](**args)
+                            # Arguments from the LLM
+                            llm_args = tool_call["args"]
+                            
+                            # --- REVERT Argument Preparation --- #
+                            # Pass session_state to all tools for now
+                            exec_args = {**llm_args} # Start with LLM args
+                            exec_args["session_state"] = session_state
+                            # --- End REVERT --- #
+
+                            # Execute the tool with the prepared arguments
+                            tool_result_content = self.tool_map[tool_name](**exec_args)
+                            
                             # Create a simple summary for the final prompt
                             executed_tool_summaries.append(f"Action: {tool_name}, Result: {tool_result_content}")
                         except Exception as e:
