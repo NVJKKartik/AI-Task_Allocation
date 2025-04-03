@@ -6,6 +6,7 @@ Generates sample data for the AI Task Allocation Agent.
 from datetime import datetime, timedelta
 import random
 import pytz
+import uuid
 
 # Assuming these classes are importable from their respective modules
 # Adjust paths if necessary based on your project structure
@@ -62,7 +63,7 @@ def generate_sample_users(num_users: int = NUM_USERS) -> Dict[str, UserProfile]:
     users = {}
     used_names = set()
     for i in range(num_users):
-        user_id = f"user-{100 + i}"
+        user_id = f"user-{uuid.uuid4()}"
         while True:
             name = f"{random.choice(FIRST_NAMES)} {random.choice(LAST_NAMES)}"
             if name not in used_names:
@@ -79,7 +80,7 @@ def generate_sample_users(num_users: int = NUM_USERS) -> Dict[str, UserProfile]:
                 "task_completion_rate": round(random.uniform(0.75, 0.99), 2),
                 "on_time_rate": round(random.uniform(0.70, 0.98), 2)
             },
-            current_workload=round(random.uniform(0.1, 0.9), 1)
+            current_workload=0.0
         )
     return users
 
@@ -88,7 +89,7 @@ def generate_sample_tasks(num_tasks: int = NUM_TASKS, available_skills: List[str
     tasks = {}
     today = datetime.now(pytz.UTC)
     for i in range(num_tasks):
-        task_id = f"task-{500 + i}"
+        task_id = f"task-{uuid.uuid4()}"
         category = random.choice(TASK_CATEGORIES)
         required_skills = {}
         if available_skills:
