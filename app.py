@@ -370,8 +370,9 @@ def show_learning():
                         # Add YouTube and technology links
                         st.markdown("### Learning Resources")
                         for skill in task.required_skills:
-                            st.write(f"- [Learn {skill} on YouTube](https://www.youtube.com/results?search_query={skill})")
-                            st.write(f"- [Documentation for {skill}](https://www.google.com/search?q={skill}+documentation)")
+                            skill_url = skill.replace(" ", "+")
+                            st.write(f"- [Learn {skill} on YouTube](https://www.youtube.com/results?search_query={skill_url})")
+                            st.write(f"- [Documentation for {skill}](https://www.google.com/search?q={skill_url}+documentation)")
                         
                         st.markdown("---")
                 except TypeError:
