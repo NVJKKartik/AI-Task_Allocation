@@ -303,24 +303,37 @@ class AutomatedAllocator:
                 # Add preferences/performance summary if desired later
             })
 
-        # Prepare task data
-        tasks_prompt_data = [t.to_dict() for t in tasks]
+        # Prepare task data with time sensitivity
+        tasks_prompt_data = []
+        for task in tasks:
+            task_dict = task.to_dict()
+            days_until_deadline = (task.deadline.astimezone(pytz.UTC) - simulated_now.astimezone(pytz.UTC)).days
+            
+            if days_until_deadline < 0:
+                time_sensitivity = "Overdue"
+            elif days_until_deadline <= 3: # Adjust threshold as needed
+                time_sensitivity = "Due Soon"
+            else:
+                time_sensitivity = "Upcoming"
+                
+            task_dict["time_sensitivity"] = time_sensitivity
+            tasks_prompt_data.append(task_dict)
 
         # Define the LLM prompt for planning
         planning_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an expert Task Allocation Planner. Your goal is to create an optimal plan assigning the given tasks to the available users.
-            
+            ("system", """You are an expert Task Allocation Planner. Your goal is to create an optimal plan assigning the given tasks to the available users based on the provided data.
+
             Guidelines:
-            1.  **Prioritize:** Assign higher priority tasks and those with earlier deadlines first.
-            2.  **Match Skills:** Match tasks to users with relevant skills and sufficient proficiency. Consider the task context (like in the TaskMatchingEngine prompt).
-            3.  **Check Availability & Workload:** Use the provided availability summary and current workload. A user might handle multiple tasks if they have the capacity and time before respective deadlines.
-            4.  **Balance Load:** Aim for a reasonably balanced workload across users, but prioritize getting tasks assigned effectively over perfect balance.
-            5.  **Assign if Possible:** Try to assign every task, but it's okay to leave a task unassigned if no suitable user is found.
-            6.  **Reasoning:** Provide a concise reason for each assignment based on the above factors.
+            1.  **Prioritize:** Focus on tasks marked 'Overdue' or 'Due Soon'. Also consider the numerical priority field.
+            2.  **Match Skills:** Match tasks to users with relevant skills and sufficient proficiency. Consider the task context.
+            3.  **Check Availability & Workload:** Use the 'availability_summary' and the numeric 'current_workload' (0.0=Free, 1.0=Max). A user might handle multiple tasks if they have the capacity (e.g., workload < 0.7) and time before respective deadlines. Be cautious assigning to users with high workload (e.g., > 0.8) unless necessary for critical/overdue tasks.
+            4.  **Balance Load:** Aim for a reasonably balanced workload across users, but prioritize getting tasks assigned effectively, especially time-sensitive ones.
+            5.  **Assign if Possible:** Try to assign every task, but it's okay to leave a task unassigned if no suitable user is found (e.g., no skills, high workload, no availability).
+            6.  **Reasoning:** Provide a concise reason for each assignment based on the key factors (skills, availability, workload, time sensitivity, priority).
 
             Input:
-            - List of tasks with id, title, required_skills, priority, deadline, estimated_duration_minutes.
-            - List of users with id, name, skills, current_workload, availability_summary.
+            - List of tasks with id, title, required_skills, priority, deadline, estimated_duration_minutes, and **time_sensitivity** ('Overdue', 'Due Soon', 'Upcoming').
+            - List of users with id, name, skills, **current_workload** (0.0-1.0 scale), and availability_summary.
             - Current Time: {current_time}
 
             Output ONLY a JSON list of allocation objects, where each object represents ONE task assignment:
@@ -328,13 +341,13 @@ class AutomatedAllocator:
                 {{
                     "task_id": "task-id-string", 
                     "user_id": "user-id-string", 
-                    "reason": "Concise reason for this specific assignment (skills, availability, priority etc.)." 
+                    "reason": "Concise reason considering skills, availability, workload, time sensitivity etc." 
                 }},
                 # ... more allocations ...
             ]
             If a task cannot be assigned, do not include it in the output list.
             """),
-            ("human", "Tasks:\n{tasks_json}\n\nUsers:\n{users_json}\n\nCurrent Time: {current_time}")
+            ("human", "Tasks:\\n{tasks_json}\\n\\nUsers:\\n{users_json}\\n\\nCurrent Time: {current_time}")
         ])
 
         planning_chain = planning_prompt | self.llm | JsonOutputParser()
